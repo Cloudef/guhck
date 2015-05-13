@@ -8,7 +8,7 @@ SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY lib)
 SET(CMAKE_ARCHIVE_OUTPUT_DIRECTORY lib)
 
 # Sources
-SET(LIBSRC "src/guhck.c" "lib/chck/buffer/buffer.c") # sources to be compiled
+SET(LIBSRC "src/guhck.c" "lib/chck/chck/buffer/buffer.c") # sources to be compiled
 SET(LIBINC "lib/chck") # include directories
 SET(LIBLIB "") # libraries to be linked
 SET(LIBDEF "") # compile defines
@@ -46,6 +46,8 @@ IF (UNIX AND CMAKE_COMPILER_IS_GNUCC)
       ADD_DEFINITIONS(-fPIC)
    ENDIF ()
 ENDIF ()
+
+add_definitions(-std=c99)
 
 # Compile static lib
 INCLUDE_DIRECTORIES(${LIBINC})

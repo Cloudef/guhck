@@ -1,91 +1,102 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <assert.h>
 #include <math.h>
 #include <zlib.h>
 #include <png.h>
-#include "buffer/buffer.h"
+#include <chck/buffer/buffer.h>
 
-typedef struct CCSColor {
-   unsigned char r, g, b, a;
-} CCSColor;
+struct ccs_color {
+   uint8_t r, g, b, a;
+};
 
-typedef struct CCSPalette {
-   unsigned int id;
-   unsigned int numColors;
-   const CCSColor *colors;
-} CCSPalette;
+struct ccs_palette {
+   uint32_t id;
+   uint32_t num_colors;
+   const struct ccs_color *colors;
+};
 
-typedef struct CCSImage {
-   unsigned int id;
-   unsigned int pid;
+struct ccs_image {
+   uint32_t id;
+   uint32_t pid;
    // 6 bytes ???
-   unsigned int width, height;
+   uint32_t width, height;
    // 10 bytes ???
-   unsigned int numPalettes;
-   const CCSPalette *palettes;
-   const unsigned char *indices;
-} CCSImage;
+   uint32_t num_palettes;
+   const struct ccs_palette *palettes;
+   const uint8_t *indices;
+};
 
-typedef struct CCSVector3f {
+struct ccs_vec3f {
    float x, y, z;
-} CCSVector3f;
+};
 
-typedef struct CCSVector2f {
+struct ccs_vec2f {
    float x, y;
-} CCSVector2f;
+};
 
-typedef struct CCSTriangle {
-   unsigned int v[3];
-} CCSTriangle;
+struct ccs_tri3u {
+   uint32_t v[3];
+};
 
-typedef struct CCSMesh {
-   unsigned int id;
-   unsigned int mid;
-   unsigned int numTriangles;
-   unsigned int numVertices;
-   unsigned int *indices;
-   CCSVector3f *vertices;
-   CCSVector2f *coords;
-} CCSMesh;
+struct ccs_mesh {
+   uint32_t id;
+   uint32_t mid;
+   uint32_t num_triangles;
+   uint32_t num_vertices;
+   uint32_t *indices;
+   struct ccs_vec3f *vertices;
+   struct ccs_vec2f *coords;
+};
 
-typedef struct CCSData {
+struct ccs_data {
    const char *name;
    // 24 bytes ???
-   unsigned int numFileNames;
-   unsigned int numObjectNames;
+   uint32_t num_files;
+   uint32_t num_objects;
    // 32 bytes ???
-   const char **fileNames;
-   const char **objectNames;
+   const char **files;
+   const char **objects;
    // 8 bytes ???
    // { read until fileType != 0xcccc0005
-   //    unsigned int fileType;
-   //    unsigned int chunkSize;
+   //    uint32_t fileType;
+   //    uint32_t chunkSize;
    //    void *data;
    // }
    // 12 bytes ???
 
-   unsigned int numImages;
-   const CCSImage *images;
-   unsigned int numMeshes;
-   const CCSMesh *meshes;
-} CCSData;
+   uint32_t num_images;
+   const struct ccs_image *images;
+   uint32_t num_meshes;
+   const struct ccs_mesh *meshes;
+};
 
-static int writeImage(const CCSImage *image, unsigned int p, const char *path)
+static bool
+write_image(const struct ccs_image *image, uint32_t p, const char *path)
 {
-   FILE *f = fopen(path, "wb");
-   if (!f) return 0;
+   assert(image && path);
 
-   const CCSPalette *palette = &image->palettes[p];
-   unsigned char *data = calloc(1, image->width * image->height * 4); // RGBA 8bpp
-   if (!data) return 0;
+   FILE *f;
+   if (!(f = fopen(path, "wb")))
+      return false;
+
+   uint8_t *data;
+   const size_t size = image->width * image->height * 4; // RGBA 8bpp
+   if (!size || !(data = calloc(1, size)))
+      return false;
 
    // write RGBA from palette
    {
-      unsigned int i = 0;
-      for (i = 0; i < image->height * image->width; ++i) {
-         unsigned char index = image->indices[i];
-         if (index >= palette->numColors) printf("%u, %u\n", index, palette->numColors);
+      const struct ccs_palette *palette = &image->palettes[p];
+      for (uint32_t i = 0; i < image->height * image->width; ++i) {
+         uint8_t index = image->indices[i];
+         if (index >= palette->num_colors) {
+            printf("-!- Index not in palette: %u, %u\n", index, palette->num_colors);
+            continue;
+         }
          data[i * 4 + 0] = palette->colors[index].r;
          data[i * 4 + 1] = palette->colors[index].g;
          data[i * 4 + 2] = palette->colors[index].b;
@@ -95,11 +106,10 @@ static int writeImage(const CCSImage *image, unsigned int p, const char *path)
 
    // invert
    {
-      unsigned int i, i2;
-      for (i = 0; i*2 < image->height; ++i) {
-         unsigned int index1 = i * image->width * 4;
-         unsigned int index2 = (image->height - 1 - i) * image->width * 4;
-         for (i2 = image->width * 4; i2 > 0; --i2) {
+      for (uint32_t i = 0; i * 2 < image->height; ++i) {
+         uint32_t index1 = i * image->width * 4;
+         uint32_t index2 = (image->height - 1 - i) * image->width * 4;
+         for (uint32_t i2 = image->width * 4; i2 > 0; --i2) {
             unsigned char temp = data[index1];
             data[index1] = data[index2];
             data[index2] = temp;
@@ -110,31 +120,28 @@ static int writeImage(const CCSImage *image, unsigned int p, const char *path)
 
    // write png
    {
-      png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-      if (!png) return 0;
+      png_structp png;
+      if (!(png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL)))
+         return false;
 
-      png_infop info = png_create_info_struct(png);
-      if (!info) return 0;
+      png_infop info;
+      if (!(info = png_create_info_struct(png)))
+         return false;
 
-      if (setjmp(png_jmpbuf(png))) {
-         return 0;
-      }
+      if (setjmp(png_jmpbuf(png)))
+         return false;
 
-      png_set_IHDR(png, info, image->width, image->height, 8,
-            PNG_COLOR_TYPE_RGBA,
-            PNG_INTERLACE_NONE,
-            PNG_COMPRESSION_TYPE_DEFAULT,
-            PNG_FILTER_TYPE_DEFAULT);
+      png_set_IHDR(png, info, image->width, image->height, 8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
-      png_byte **rows = png_malloc(png, image->height * sizeof(png_byte*));
-      if (!rows) return 0;
+      png_byte **rows;
+      if (!(rows = png_malloc(png, image->height * sizeof(png_byte*))))
+         return false;
 
-      unsigned int x, y;
-      for (y = 0; y < image->height; ++y) {
+      for (uint32_t y = 0; y < image->height; ++y) {
          png_byte *row = png_malloc(png, image->width * 4);
          rows[y] = row;
-         for (x = 0; x < image->width; ++x) {
-            unsigned int i = image->width * y + x;
+         for (uint32_t x = 0; x < image->width; ++x) {
+            uint32_t i = image->width * y + x;
             *row++ = data[i * 4 + 0];
             *row++ = data[i * 4 + 1];
             *row++ = data[i * 4 + 2];
@@ -146,20 +153,24 @@ static int writeImage(const CCSImage *image, unsigned int p, const char *path)
       png_set_rows(png, info, rows);
       png_write_png(png, info, PNG_TRANSFORM_IDENTITY, NULL);
 
-      for (y = 0; y < image->height; ++y) png_free(png, rows[y]);
+      for (uint32_t y = 0; y < image->height; ++y)
+         png_free(png, rows[y]);
+
       png_free(png, rows);
       png_destroy_write_struct(&png, &info);
    }
 
    free(data);
    fclose(f);
-   return 1;
+   return true;
 }
 
-static void resolveTriStrip(CCSTriangle *faces, unsigned int *f, unsigned int start, unsigned int size, unsigned int type)
+static void
+resolve_tristrip(struct ccs_tri3u *faces, uint32_t *f, uint32_t start, uint32_t size, uint32_t type)
 {
-   unsigned int i;
-   for (i = 0; i < size - 2; ++i) {
+   assert(faces && f);
+
+   for (uint32_t i = 0; i < size - 2; ++i) {
       switch (type) {
          case 1:
             if (i % 2 == 1) {
@@ -196,10 +207,14 @@ static void resolveTriStrip(CCSTriangle *faces, unsigned int *f, unsigned int st
    }
 }
 
-static int writeMesh(const CCSMesh *mesh, const char *texture, const char *name, const char *path)
+static bool
+write_mesh(const struct ccs_mesh *mesh, const char *texture, const char *name, const char *path)
 {
-   FILE *f = fopen(path, "w");
-   if (!f) return 0;
+   assert(mesh && texture && name && path);
+
+   FILE *f;
+   if (!(f = fopen(path, "w")))
+      return false;
 
    fprintf(f, "# guccs (G.U Extractor)\r\n");
    fprintf(f, "# mesh: %s\r\n\r\n", name);
@@ -208,37 +223,28 @@ static int writeMesh(const CCSMesh *mesh, const char *texture, const char *name,
 
    // vertices
    {
-      unsigned int i;
-      for (i = 0; i < mesh->numVertices; ++i) {
-         fprintf(f, "v %f %f %f\r\n",
-               mesh->vertices[i].x,
-               mesh->vertices[i].y,
-               mesh->vertices[i].z);
-      }
+      for (uint32_t i = 0; i < mesh->num_vertices; ++i)
+         fprintf(f, "v %f %f %f\r\n", mesh->vertices[i].x, mesh->vertices[i].y, mesh->vertices[i].z);
    }
 
    // coords
    {
-      unsigned int i;
-      for (i = 0; i < mesh->numVertices; ++i) {
-         fprintf(f, "vt %f %f\r\n",
-               mesh->coords[i].x,
-               mesh->coords[i].y);
-      }
+      for (uint32_t i = 0; i < mesh->num_vertices; ++i)
+         fprintf(f, "vt %f %f\r\n", mesh->coords[i].x, mesh->coords[i].y);
    }
 
    // faces
    {
-      CCSTriangle *faces = calloc(mesh->numTriangles, sizeof(CCSTriangle));
-      if (!faces) return 0;
+      struct ccs_tri3u *faces;
+      if (!(faces = calloc(mesh->num_triangles, sizeof(struct ccs_tri3u))))
+         return false;
 
-      unsigned int ff, i, size = 0, started = 0;
-      for (ff = 0, i = 0; i < mesh->numVertices; ++i) {
+      for (uint32_t ff = 0, i = 0, size = 0, started = 0; i < mesh->num_vertices; ++i) {
          if (started && mesh->indices[i] == 0) {
             ++size;
          } else if (started && mesh->indices[i] != 0) {
             started = 0;
-            resolveTriStrip(faces, &ff, i - size, size, mesh->indices[i - size]);
+            resolve_tristrip(faces, &ff, i - size, size, mesh->indices[i - size]);
             size = 0;
          }
 
@@ -248,12 +254,11 @@ static int writeMesh(const CCSMesh *mesh, const char *texture, const char *name,
             ++i;
          }
 
-         if (i == mesh->numVertices - 1) {
-            resolveTriStrip(faces, &ff, (i - size) + 1, size, mesh->indices[(i - size) + 1]);
-         }
+         if (i == mesh->num_vertices - 1)
+            resolve_tristrip(faces, &ff, (i - size) + 1, size, mesh->indices[(i - size) + 1]);
       }
 
-      for (i = 0; i < mesh->numTriangles; ++i) {
+      for (uint32_t i = 0; i < mesh->num_triangles; ++i) {
          fprintf(f, "f %u/%u %u/%u %u/%u\r\n",
                faces[i].v[0] + 1,
                faces[i].v[0] + 1,
@@ -269,9 +274,10 @@ static int writeMesh(const CCSMesh *mesh, const char *texture, const char *name,
    fclose(f);
 
    char mtl[256];
-   snprintf(mtl, sizeof(mtl)-1, "%s.mtl", name);
-   f = fopen(mtl, "w");
-   if (!f) return 0;
+   snprintf(mtl, sizeof(mtl) - 1, "%s.mtl", name);
+
+   if (!(f = fopen(mtl, "w")))
+      return false;
 
    // write material
    {
@@ -282,336 +288,373 @@ static int writeMesh(const CCSMesh *mesh, const char *texture, const char *name,
    }
 
    fclose(f);
-   return 1;
+   return true;
 }
 
-static int readImage(chckBuffer *buffer, CCSImage *image)
+static bool
+read_image(struct chck_buffer *buffer, struct ccs_image *image)
 {
-   chckBufferReadUInt32(buffer, &image->id); // ID?
-   chckBufferReadUInt32(buffer, &image->pid); // Palette ID?
+   assert(buffer && image);
+
+   chck_buffer_read_int(&image->id, sizeof(image->id), buffer); // ID?
+   chck_buffer_read_int(&image->pid, sizeof(image->pid), buffer); // Paletted ID?
 
    // our IDs start from zero
    image->id -= 1;
    image->pid -= 1;
 
 #if 1
-   unsigned int tmp2;
-   chckBufferReadUInt32(buffer, &tmp2); // ???
-   printf("1: %u\n", tmp2);
-   unsigned char tmp3;
-   chckBufferReadUInt8(buffer, &tmp3); // ???
-   printf("2: %u\n", tmp3);
-   unsigned char type;
-   chckBufferReadUInt8(buffer, &type); // ???
-   printf("3: %u\n", type);
-   chckBufferReadUInt8(buffer, &tmp3); // ???
-   printf("4: %u\n", tmp3);
-   chckBufferReadUInt8(buffer, &tmp3); // ???
-   printf("5: %u\n", tmp3);
+   uint8_t type;
+   {
+      union {
+         uint32_t tmp32;
+         uint8_t tmp8;
+      } u;
+      chck_buffer_read_int(&u.tmp32, sizeof(u.tmp32), buffer); // ID?
+      printf("1: %u\n", u.tmp32);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("2: %u\n", u.tmp8);
+      chck_buffer_read_int(&type, sizeof(type), buffer); // ???
+      printf("3: %u\n", type);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("4: %u\n", u.tmp8);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("5: %u\n", u.tmp8);
+   }
 #else
-   chckBufferSeek(buffer, 8, SEEK_CUR); // ???
+   chck_buffer_seek(buffer, 8, SEEK_CUR); // ???
 #endif
 
-   unsigned char exponent;
-   chckBufferReadUInt8(buffer, &exponent);
-   image->width = (unsigned int)pow(2.0, exponent);
-   chckBufferReadUInt8(buffer, &exponent);
-   image->height = (unsigned int)pow(2.0, exponent);
+   uint8_t exponent;
+   chck_buffer_read_int(&exponent, sizeof(exponent), buffer);
+   image->width = (uint32_t)pow(2.0, exponent);
+   chck_buffer_read_int(&exponent, sizeof(exponent), buffer);
+   image->height = (uint32_t)pow(2.0, exponent);
 
 #if 0
-   unsigned char tmp;
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("1: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("2: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("3: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // channels?
-   printf("4: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("5: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("6: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("7: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("8: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("9: %u\n", tmp);
-   chckBufferReadUInt8(buffer, &tmp); // ???
-   printf("10: %u\n", tmp);
+   {
+      union {
+         uint8_t tmp8;
+      };
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("1: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("2: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("3: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // channels?
+      printf("4: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("5: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("6: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("7: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("8: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("9: %u\n", tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(u.tmp8), buffer); // ???
+      printf("10: %u\n", tmp);
+   }
 #else
-   chckBufferSeek(buffer, 10, SEEK_CUR); // ???
+   chck_buffer_seek(buffer, 10, SEEK_CUR); // ???
 #endif
 
-   char *indices = calloc(1, image->width * image->height);
-   if (!indices) return 0;
+   uint8_t *indices;
+   const size_t size = image->width * image->height;
+   if (!size || !(indices = calloc(1, size)))
+      return false;
 
    if (type == 19) {
       // 32bit palette
-      chckBufferRead(indices, image->width * image->height, 1, buffer);
+      chck_buffer_read(indices, size, 1, buffer);
    } else if (type == 20) {
       // 16bit palette
-      unsigned int i;
-      unsigned char index = 0;
-      for (i = 0; i < image->width * image->height; ++i) {
-         chckBufferReadUInt8(buffer, &index);
+      for (uint32_t i = 0, index = 0; i < size; ++i) {
+         chck_buffer_read_int(&index, sizeof(index), buffer);
          indices[i++] = index % 16;
          indices[i] = index / 16;
-         if (indices[i] == 16 || indices[i-1] == 16) {
-            printf("(%u, %u) %u\n", indices[i-1], indices[i], index);
-            return 0;
+         if (indices[i] == 16 || indices[i - 1] == 16) {
+            printf("(%u, %u) %u\n", indices[i - 1], indices[i], index);
+            return false;
          }
       }
    } else {
       printf("-!- unknown palette\n");
    }
 
-   image->indices = (const unsigned char*)indices;
-   return 1;
+   image->indices = (const uint8_t*)indices;
+   return true;
 }
 
-static int readPalette(chckBuffer *buffer, CCSPalette *palette, size_t size)
+static bool
+read_palette(struct chck_buffer *buffer, struct ccs_palette *palette, size_t size)
 {
-   size_t numColors = (size - 20) / 4;
-   CCSColor *colors = calloc(numColors, sizeof(CCSColor));
-   if (!colors) return 0;
+   assert(buffer && palette);
 
-   chckBufferReadUInt32(buffer, &palette->id); // ID?
-   chckBufferSeek(buffer, 16, SEEK_CUR); // ???
+   struct ccs_color *colors;
+   const size_t num_colors = (size - 20) / 4;
+   if (!num_colors || !(colors = calloc(num_colors, sizeof(struct ccs_color))))
+      return false;
+
+   chck_buffer_read_int(&palette->id, sizeof(palette->id), buffer); // ID?
+   chck_buffer_seek(buffer, 16, SEEK_CUR); // ???
 
    // our IDs start from zero
    palette->id -= 1;
 
-   unsigned int i = 0;
-   for (i = 0; i < numColors; ++i) {
-      chckBufferReadUInt8(buffer, &colors[i].r);
-      chckBufferReadUInt8(buffer, &colors[i].g);
-      chckBufferReadUInt8(buffer, &colors[i].b);
-      chckBufferReadUInt8(buffer, &colors[i].a);
+   for (uint32_t i = 0; i < num_colors; ++i) {
+      chck_buffer_read_int(&colors[i].r, sizeof(colors[i].r), buffer);
+      chck_buffer_read_int(&colors[i].g, sizeof(colors[i].g), buffer);
+      chck_buffer_read_int(&colors[i].b, sizeof(colors[i].b), buffer);
+      chck_buffer_read_int(&colors[i].a, sizeof(colors[i].a), buffer);
       if (colors[i].a <= 128) colors[i].a = (colors[i].a * 255) / 128;
    }
 
-   palette->numColors = numColors;
-   palette->colors = (CCSColor*)colors;
-   return 1;
+   palette->num_colors = num_colors;
+   palette->colors = colors;
+   return true;
 }
 
-static int readMesh(chckBuffer *buffer, CCSMesh *mesh)
+static bool
+read_mesh(struct chck_buffer *buffer, struct ccs_mesh *mesh)
 {
-   chckBufferReadUInt32(buffer, &mesh->id); // ID?
+   assert(buffer && mesh);
+
+   chck_buffer_read_int(&mesh->id, sizeof(mesh->id), buffer); // ID?
 #if 0
-   unsigned int tmp;
-   chckBufferReadUInt32(buffer, &tmp); // ID?
-   printf("1. %u\n", tmp);
-   chckBufferReadUInt32(buffer, &tmp); // ID?
-   printf("2. %u\n", tmp);
-   chckBufferReadUInt32(buffer, &tmp); // ID?
-   printf("3. %u\n", tmp);
+   {
+      union {
+         uint32_t tmp32;
+      };
+      chck_buffer_read_int(&tmp, sizeof(u.tmp32), buffer); // ID?
+      printf("1. %u\n", tmp);
+      chck_buffer_read_int(&tmp, sizeof(u.tmp32), buffer); // ID?
+      printf("2. %u\n", tmp);
+      chck_buffer_read_int(&tmp, sizeof(u.tmp32), buffer); // ID?
+      printf("3. %u\n", tmp);
+   }
 #else
-   chckBufferSeek(buffer, 12, SEEK_CUR); // ???
+   chck_buffer_seek(buffer, 12, SEEK_CUR); // ???
 #endif
 
    // our IDs start from zero
    mesh->id -= 1;
 
-   unsigned int numIndices;
-   chckBufferReadUInt32(buffer, &numIndices);
+   uint32_t num_indices;
+   chck_buffer_read_int(&num_indices, sizeof(num_indices), buffer);
 
-   unsigned int unknown;
-   chckBufferReadUInt32(buffer, &unknown);
-   if (unknown == 0x80000000) return 0;
+   uint32_t unknown;
+   chck_buffer_read_int(&unknown, sizeof(unknown), buffer);
+   if (unknown == 0x80000000)
+      return false;
 
-   unsigned int unknownid;
-   chckBufferSeek(buffer, 4, SEEK_CUR); // ???
-   chckBufferReadUInt32(buffer, &unknownid); // Some ID?
-   chckBufferReadUInt32(buffer, &mesh->mid); // Material ID?
+   uint32_t unknownid;
+   chck_buffer_seek(buffer, 4, SEEK_CUR); // ???
+   chck_buffer_read_int(&unknownid, sizeof(unknownid), buffer); // Some ID?
+   chck_buffer_read_int(&mesh->mid, sizeof(mesh->mid), buffer); // Material ID?
 
    // our IDs start from zero
    unknownid -= 1;
    mesh->mid -= 1;
 
-   unsigned int numVertices;
-   chckBufferReadUInt32(buffer, &numVertices);
+   uint32_t num_vertices;
+   chck_buffer_read_int(&num_vertices, sizeof(num_vertices), buffer);
 
-   if (numVertices > 100000) {
-      printf("VERTICES: %u\n", numVertices);
-      return 0;
+   if (num_vertices > 100000) {
+      printf("VERTICES: %u\n", num_vertices);
+      return false;
    }
 
-   CCSVector3f *vertices = calloc(numVertices, sizeof(CCSVector3f));
-   if (!vertices) return 0;
+   struct ccs_vec3f *vertices;
+   if (!num_vertices || !(vertices = calloc(num_vertices, sizeof(struct ccs_vec3f))))
+      return false;
 
-   unsigned int i;
-   for (i = 0; i < numVertices; ++i) {
-      char data[6];
-      chckBufferRead(data, sizeof(data), 1, buffer);
+   for (uint32_t i = 0; i < num_vertices; ++i) {
+      int8_t data[6];
+      chck_buffer_read(data, sizeof(data), 1, buffer);
       vertices[i].x = (float)(data[0] & 0xff) / 256.0f + (float)data[1];
       vertices[i].y = (float)(data[2] & 0xff) / 256.0f + (float)data[3];
       vertices[i].z = (float)(data[4] & 0xff) / 256.0f + (float)data[5];
    }
 
-   chckBufferSeek(buffer, (numVertices * 6) % 4, SEEK_CUR); // normals / vcolors ?
+   chck_buffer_seek(buffer, (num_vertices * 6) % 4, SEEK_CUR); // normals / vcolors ?
 
-   unsigned int *indices = calloc(numVertices, sizeof(unsigned int));
-   if (!indices) return 0;
+   uint32_t *indices;
+   if (!num_vertices || !(indices = calloc(num_vertices, sizeof(uint32_t))))
+      return false;
 
-   unsigned int numTriangles = 0;
-   for (i = 0; i < numVertices; ++i) {
-      chckBufferSeek(buffer, 3, SEEK_CUR); // ???
-      unsigned char index;
-      chckBufferReadUInt8(buffer, &index); // ^ maybe int?
+   uint32_t num_triangles = 0;
+   for (uint32_t i = 0; i < num_vertices; ++i) {
+      chck_buffer_seek(buffer, 3, SEEK_CUR); // ???
+      uint8_t index;
+      chck_buffer_read_int(&index, sizeof(index), buffer); // ^ maybe int?
       indices[i] = index;
-      if (index == 0) ++numTriangles;
+      num_triangles += (index == 0);
    }
 
-   chckBufferSeek(buffer, numVertices * 4, SEEK_CUR); // normals / vcolors ?
-   CCSVector2f *coords = calloc(numVertices, sizeof(CCSVector2f));
-   if (!coords) return 0;
+   chck_buffer_seek(buffer, num_vertices * 4, SEEK_CUR); // normals / vcolors ?
 
-   for (i = 0; i < numVertices; ++i) {
-      char data[4];
-      chckBufferRead(data, sizeof(data), 1, buffer);
+   struct ccs_vec2f *coords;
+   if (!num_vertices || !(coords = calloc(num_vertices, sizeof(struct ccs_vec2f))))
+      return false;
+
+   for (uint32_t i = 0; i < num_vertices; ++i) {
+      int8_t data[4];
+      chck_buffer_read(data, sizeof(data), 1, buffer);
       coords[i].x = (float)(data[0] & 0xff) / 256.0f + (float)data[1];
       coords[i].y = (float)(data[2] & 0xff) / 256.0f + (float)data[3];
    }
 
-   mesh->numTriangles = numTriangles;
-   mesh->numVertices = numVertices;
+   mesh->num_triangles = num_triangles;
+   mesh->num_vertices = num_vertices;
    mesh->indices = indices;
    mesh->vertices = vertices;
    mesh->coords = coords;
-   return 1;
+   return true;
 }
 
-static int readHeader(chckBuffer *buffer)
+static bool
+read_header(struct chck_buffer *buffer)
 {
-   unsigned int header = 0;
-   chckBufferReadUInt32(buffer, &header);
+   assert(buffer);
+   uint32_t header = 0;
+   chck_buffer_read_int(&header, sizeof(header), buffer);
    return (header == 0xcccc0001);
 }
 
-static int readContents(chckBuffer *buffer, CCSData *data)
+static bool
+read_contents(struct chck_buffer *buffer, struct ccs_data *data)
 {
-   chckBufferReadString(buffer, 4, (char**)&data->name);
-   chckBufferSeek(buffer, 23, SEEK_CUR); // useless waste
-   chckBufferSeek(buffer, 24, SEEK_CUR); // ???
-   chckBufferReadUInt32(buffer, &data->numFileNames);
-   chckBufferReadUInt32(buffer, &data->numObjectNames);
+   assert(buffer && data);
+
+   chck_buffer_read_string_of_type((char **)&data->name, NULL, 4, buffer);
+   chck_buffer_seek(buffer, 23, SEEK_CUR); // useless waste
+   chck_buffer_seek(buffer, 24, SEEK_CUR); // ???
+   chck_buffer_read_int(&data->num_files, sizeof(data->num_files), buffer);
+   chck_buffer_read_int(&data->num_objects, sizeof(data->num_objects), buffer);
 
    printf("%s (%zu)\n", data->name, strlen(data->name));
 
    // format counts from 1..9, we count from 0..9
-   if (data->numFileNames > 0) data->numFileNames -= 1;
-   if (data->numObjectNames > 0) data->numObjectNames -= 1;
+   data->num_files -= (data->num_files > 0);
+   data->num_objects -= (data->num_objects > 0);
 
-   if (data->numFileNames > 10000 || data->numObjectNames > 10000) {
-      printf("too many files: %u, %u\n", data->numFileNames, data->numObjectNames);
-      return 0;
+   if (data->num_files > 10000 || data->num_objects > 10000) {
+      printf("too many files: %u, %u\n", data->num_files, data->num_objects);
+      return false;
    }
 
    // read file names
-   chckBufferSeek(buffer, 32, SEEK_CUR); // ???
-   if (data->numFileNames) {
-      char **strings = calloc(data->numFileNames, sizeof(char*));
-      data->fileNames = (const char**)strings;
-      if (!strings) return 0;
+   chck_buffer_seek(buffer, 32, SEEK_CUR); // ???
+   if (data->num_files) {
+      char **strings;
+      if (!(strings = calloc(data->num_files, sizeof(char*))))
+         return false;
 
-      unsigned int i;
-      for (i = 0; i < data->numFileNames; ++i) {
-         strings[i] = calloc(1, 33);
-         chckBufferRead(strings[i], 32, 1, buffer);
-         unsigned int len = strlen(strings[i]);
-         if (len && len + 1 < 32) {
-            strings[i] = realloc(strings[i], len + 1);
-            if (!strings[i]) return 0;
-         }
+      if (!(data->files = (const char**)strings))
+         return false;
+
+      for (uint32_t i = 0; i < data->num_files; ++i) {
+         if (!(strings[i] = calloc(1, 33)))
+            return false;
+
+         chck_buffer_read(strings[i], 32, 1, buffer);
+         const uint32_t len = strlen(strings[i]);
+         if (len && len + 1 < 32 && !(strings[i] = realloc(strings[i], len + 1)))
+            return false;
       }
    }
 
    // read object names
-   chckBufferSeek(buffer, 32, SEEK_CUR); // ???
-   if (data->numObjectNames) {
-      char **strings = calloc(data->numObjectNames, sizeof(char*));
-      data->objectNames = (const char**)strings;
-      if (!strings) return 0;
+   chck_buffer_seek(buffer, 32, SEEK_CUR); // ???
+   if (data->num_objects) {
+      char **strings;
+      if (!data->num_objects || !(strings = calloc(data->num_objects, sizeof(char*))))
+            return false;
 
-      unsigned int i;
-      for (i = 0; i < data->numObjectNames; ++i) {
-         strings[i] = calloc(1, 33);
-         chckBufferRead(strings[i], 32, 1, buffer);
-         unsigned int len = strlen(strings[i]);
-         if (len && len + 1 < 32) {
-            strings[i] = realloc(strings[i], len + 1);
-            if (!strings[i]) return 0;
-         }
+      data->objects = (const char**)strings;
+
+      for (uint32_t i = 0; i < data->num_objects; ++i) {
+         if (!(strings[i] = calloc(1, 33)))
+            return false;
+
+         chck_buffer_read(strings[i], 32, 1, buffer);
+         const uint32_t len = strlen(strings[i]);
+         if (len && len + 1 < 32 && !(strings[i] = realloc(strings[i], len + 1)))
+            return false;
       }
    }
 
    // read data
    {
-      unsigned int fileType = 0xcccc0005;
+      uint32_t filetype = 0xcccc0005;
 #if 0
-      unsigned char tmp;
-      chckBufferReadUInt8(buffer, &tmp);
+      union {
+         uint8_t tmp8;
+      };
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("1: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("2: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("3: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("4: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("5: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("6: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("7: %u\n", tmp);
-      chckBufferReadUInt8(buffer, &tmp);
+      chck_buffer_read_int(&u.tmp8, sizeof(uint8_t), buffer);
       printf("8: %u\n", tmp);
 #else
-      chckBufferSeek(buffer, 8, SEEK_CUR); // ???
+      chck_buffer_seek(buffer, 8, SEEK_CUR); // ???
 #endif
 
-      unsigned int numPalettes = 0;
-      unsigned int memPalettes = 2;
-      CCSPalette *palettes = calloc(memPalettes, sizeof(CCSPalette));
-      if (!palettes) return 0;
+      uint32_t num_palettes = 0, mem_palettes = 2;
+      struct ccs_palette *palettes;
+      if (!(palettes = calloc(mem_palettes, sizeof(struct ccs_palette))))
+         return false;
 
-      unsigned int numImages = 0;
-      unsigned int memImages = 2;
-      CCSImage *images = calloc(memImages, sizeof(CCSImage));
-      if (!images) return 0;
+      uint32_t num_images = 0, mem_images = 2;
+      struct ccs_image *images;
+      if (!(images = calloc(mem_images, sizeof(struct ccs_image))))
+         return false;
 
-      unsigned int numMeshes = 0;
-      unsigned int memMeshes = 2;
-      CCSMesh *meshes = calloc(memMeshes, sizeof(CCSImage));
-      if (!meshes) return 0;
-
+      uint32_t num_meshes = 0, mem_meshes = 2;
+      struct ccs_mesh *meshes;
+      if (!(meshes = calloc(mem_meshes, sizeof(struct ccs_mesh))))
+         return false;
 
       while (1) {
-         unsigned int chunkSize = 0;
-         size_t startOffset, trail = 0;
-         chckBufferReadUInt32(buffer, &fileType);
-         if (fileType == 0x0 || fileType == 0xcccc0005 || fileType == 0xcccc1b00) break;
+         chck_buffer_read_int(&filetype, sizeof(filetype), buffer);
+         if (filetype == 0x0 || filetype == 0xcccc0005 || filetype == 0xcccc1b00)
+            break;
 #if 0
-         printf("0x%x\n", fileType);
+         printf("0x%x\n", filetype);
 #endif
 
-         chckBufferReadUInt32(buffer, &chunkSize);
-         if (chunkSize * 4 > chckBufferGetSize(buffer) - chckBufferGetOffset(buffer)) break;
-         startOffset = chckBufferGetOffset(buffer);
+         uint32_t chunk_size = 0;
+         chck_buffer_read_int(&chunk_size, sizeof(chunk_size), buffer);
+         if (chunk_size * 4 > buffer->size - (buffer->curpos - buffer->buffer))
+            break;
+
+         size_t start_offset = (buffer->curpos - buffer->buffer);
 
 #if 0
-         unsigned int id;
-         chckBufferReadUInt32(buffer, &id);
-         if (id > 0) id -= 1;
-         printf("0x%x (%u, %u)\n", fileType, id, chunkSize);
-         printf("%s\n", data->objectNames[id]);
-         chckBufferSeek(buffer, startOffset, SEEK_SET);
+         uint32_t id;
+         chck_buffer_read_int(&id, sizeof(id), buffer);
+         id -= (id > 0);
+         printf("0x%x (%u, %u)\n", filetype, id, chunk_size);
+         printf("%s\n", data->objects[id]);
+         chck_buffer_seek(buffer, start_offset, SEEK_SET);
 #endif
 
-         switch (fileType) {
+         size_t trail = 0;
+         switch (filetype) {
             case 0xcccc2400: // BIN
                // STRING
                break;
@@ -624,101 +667,110 @@ static int readContents(chckBuffer *buffer, CCSData *data)
             case 0xcccc0700: // ANIMATION
                break;
             case 0xcccc0800: // MESH
-               if (readMesh(buffer, &meshes[numMeshes])) {
-                  if (++numMeshes >= memMeshes) {
-                     memMeshes *= 2;
-                     meshes = realloc(meshes, memMeshes * sizeof(CCSMesh));
-                     if (!meshes) return 0;
+               if (read_mesh(buffer, &meshes[num_meshes])) {
+                  if (++num_meshes >= mem_meshes) {
+                     mem_meshes *= 2;
+                     if (!(meshes = realloc(meshes, mem_meshes * sizeof(struct ccs_mesh))))
+                        return false;
                   }
                }
                break;
             case 0xcccc0900: // CMP
                break;
             case 0xcccc0400: // PALETTE
-               if (!readPalette(buffer, &palettes[numPalettes], chunkSize * 4)) return 0;
-               if (++numPalettes >= memPalettes) {
-                  memPalettes *= 2;
-                  palettes = realloc(palettes, memPalettes * sizeof(CCSPalette));
-                  if (!palettes) return 0;
+               if (!read_palette(buffer, &palettes[num_palettes], chunk_size * 4))
+                  return false;
+               if (++num_palettes >= mem_palettes) {
+                  mem_palettes *= 2;
+                  if (!(palettes = realloc(palettes, mem_palettes * sizeof(struct ccs_palette))))
+                     return false;
                }
                break;
             case 0xcccc0300: // IMAGE
                {
                   trail = 200;
-                  if (!readImage(buffer, &images[numImages])) return 0;
+                  if (!read_image(buffer, &images[num_images]))
+                     return false;
 
-                  if (!numPalettes) {
+                  if (!num_palettes) {
                      free(palettes);
                      palettes = NULL;
-                  } else if (numPalettes + 1 < memPalettes) {
-                     palettes = realloc(palettes, (numPalettes + 1) * sizeof(CCSPalette));
-                  }
-                  images[numImages].numPalettes = numPalettes;
-                  images[numImages].palettes = palettes;
-
-                  if (++numImages >= memImages) {
-                     memImages *= 2;
-                     images = realloc(images, memImages * sizeof(CCSImage));
-                     if (!images) return 0;
+                  } else if (num_palettes + 1 < mem_palettes) {
+                     palettes = realloc(palettes, (num_palettes + 1) * sizeof(struct ccs_palette));
                   }
 
-                  numPalettes = 0;
-                  memPalettes = 2;
-                  palettes = calloc(memPalettes, sizeof(CCSPalette));
-                  if (!palettes) return 0;
+                  images[num_images].num_palettes = num_palettes;
+                  images[num_images].palettes = palettes;
+
+                  if (++num_images >= mem_images) {
+                     mem_images *= 2;
+                     if (!(images = realloc(images, mem_images * sizeof(struct ccs_image))))
+                        return false;
+                  }
+
+                  num_palettes = 0;
+                  mem_palettes = 2;
+                  if (!(palettes = calloc(mem_palettes, sizeof(struct ccs_palette))))
+                     return false;
                }
                break;
             default:break;
          }
 
-         chckBufferSeek(buffer, startOffset, SEEK_SET);
-         chckBufferSeek(buffer, chunkSize * 4 - trail, SEEK_CUR);
+         chck_buffer_seek(buffer, start_offset, SEEK_SET);
+         chck_buffer_seek(buffer, chunk_size * 4 - trail, SEEK_CUR);
       }
 
-      if (palettes) free(palettes);
+      if (palettes)
+         free(palettes);
 
-      if (!numImages) {
+      if (!num_images) {
          free(images);
          images = NULL;
-      } else if (numImages + 1 < memImages) {
-         images = realloc(images, (numImages + 1) * sizeof(CCSImage));
+      } else if (num_images + 1 < mem_images) {
+         images = realloc(images, (num_images + 1) * sizeof(struct ccs_image));
       }
-      data->numImages = numImages;
-      data->images = (const CCSImage*)images;
 
-      if (!numMeshes) {
+      data->num_images = num_images;
+      data->images = (const struct ccs_image*)images;
+
+      if (!num_meshes) {
          free(meshes);
          meshes = NULL;
-      } else if (numMeshes + 1 < memMeshes) {
-         meshes = realloc(meshes, (numMeshes + 1) * sizeof(CCSMesh));
+      } else if (num_meshes + 1 < mem_meshes) {
+         meshes = realloc(meshes, (num_meshes + 1) * sizeof(struct ccs_mesh));
       }
-      data->numMeshes = numMeshes;
-      data->meshes = (const CCSMesh*)meshes;
+      data->num_meshes = num_meshes;
+      data->meshes = (const struct ccs_mesh*)meshes;
    }
 
    // trailing 12 bytes ???
-   return 1;
+   return true;
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
    if (argc < 2) {
-      char *base = strrchr(argv[0], '/');
+      char *base;
+      if (!(base = strrchr(argv[0], '/')))
+         return EXIT_SUCCESS;
+
       if (base) base++; else base = argv[0];
       fprintf(stderr, "usage: %s <file>\n", base);
       return EXIT_SUCCESS;
    }
 
    // open and decompress file if needed
-   gzFile gf = gzopen(argv[1], "rb");
-   if (!gf) {
+   gzFile gf;
+   if (!(gf = gzopen(argv[1], "rb"))) {
       fprintf(stderr, "cannot open file: %s\n", argv[1]);
       return EXIT_FAILURE;
    }
 
    size_t size = 4096000;
-   chckBuffer *buffer = chckBufferNew(size, CHCK_BUFFER_ENDIAN_LITTLE);
-   if (!buffer) {
+   struct chck_buffer buffer;
+   if (!chck_buffer(&buffer, size, CHCK_ENDIANESS_LITTLE)) {
       fprintf(stderr, "not enough memory (%ld bytes)\n", size);
       return EXIT_FAILURE;
    }
@@ -726,27 +778,28 @@ int main(int argc, char **argv)
    // decompress/read
    {
       size_t read;
-      void *buf = malloc(size);
-      if (!buf) {
+      void *buf;
+      if (!(buf = malloc(size))) {
          fprintf(stderr, "not enough memory (%ld bytes)\n", size);
          return EXIT_FAILURE;
       }
+
       while ((read = gzread(gf, buf, size)) != 0)
-         chckBufferWrite(buf, read, 1, buffer);
+         chck_buffer_write(buf, read, 1, &buffer);
       free(buf);
    }
 
-   chckBufferSeek(buffer, 0, SEEK_SET);
+   chck_buffer_seek(&buffer, 0, SEEK_SET);
    gzclose(gf);
 
-   if (!readHeader(buffer)) {
+   if (!read_header(&buffer)) {
       fprintf(stderr, "invalid header\n");
       return EXIT_FAILURE;
    }
 
-   CCSData data;
+   struct ccs_data data;
    memset(&data, 0, sizeof(data));
-   if (!readContents(buffer, &data)) {
+   if (!read_contents(&buffer, &data)) {
       fprintf(stderr, "failed to read contents\n");
       return EXIT_FAILURE;
    }
@@ -758,42 +811,41 @@ int main(int argc, char **argv)
    printf(" \\____(_)___/   \\____\\____|____/  |_____/_/\\_\\ |_| |_| \\_\\/_/   \\_\\____| |_|\n");
    printf("\n%s (%s)\n", data.name, argv[1]);
 
-   unsigned int i;
 #if 1
    printf("\n--- FILES ---\n");
-   for (i = 0; i < data.numFileNames; ++i) printf("%u. %s\n", i, data.fileNames[i]);
+   for (uint32_t i = 0; i < data.num_files; ++i)
+      printf("%u. %s\n", i, data.files[i]);
    printf("\n--- OBJECTS ---\n");
-   for (i = 0; i < data.numObjectNames; ++i) printf("%u. %s\n", i, data.objectNames[i]);
+   for (uint32_t i = 0; i < data.num_objects; ++i)
+      printf("%u. %s\n", i, data.objects[i]);
 #endif
    printf("\n--- MESHES ---\n");
-   for (i = 0; i < data.numMeshes; ++i) {
-      printf("• %s\n", data.objectNames[data.meshes[i].id]);
-      printf("    • %s\n", data.objectNames[data.meshes[i].mid]);
+   for (uint32_t i = 0; i < data.num_meshes; ++i) {
+      printf("• %s\n", data.objects[data.meshes[i].id]);
+      printf("    • %s\n", data.objects[data.meshes[i].mid]);
 
       char buf[256];
-      snprintf(buf, sizeof(buf)-1, "%s.obj", data.objectNames[data.meshes[i].id]);
+      snprintf(buf, sizeof(buf) - 1, "%s.obj", data.objects[data.meshes[i].id]);
       char buf2[256];
-      snprintf(buf2, sizeof(buf2)-1, "%s.png", data.objectNames[data.meshes[i].mid+1]);
-      writeMesh(&data.meshes[i], buf2, data.objectNames[data.meshes[i].id], buf);
+      snprintf(buf2, sizeof(buf2) - 1, "%s.png", data.objects[data.meshes[i].mid + 1]);
+      write_mesh(&data.meshes[i], buf2, data.objects[data.meshes[i].id], buf);
    }
+
    printf("\n--- IMAGES ---\n");
-   for (i = 0; i < data.numImages; ++i) {
-      printf("• %s (%ux%u)\n",
-            data.objectNames[data.images[i].id],
-            data.images[i].width, data.images[i].height);
-      unsigned int p;
-      for (p = 0; p < data.images[i].numPalettes; ++p) {
+   for (uint32_t i = 0; i < data.num_images; ++i) {
+      printf("• %s (%ux%u)\n", data.objects[data.images[i].id], data.images[i].width, data.images[i].height);
+      for (uint32_t p = 0; p < data.images[i].num_palettes; ++p) {
          printf("    • %s palette with num colors %u\n",
-               data.objectNames[data.images[i].palettes[p].id],
-               data.images[i].palettes[p].numColors);
+               data.objects[data.images[i].palettes[p].id],
+               data.images[i].palettes[p].num_colors);
       }
 
       char buf[256];
-      snprintf(buf, sizeof(buf)-1, "%s.png", data.objectNames[data.images[i].id]);
-      writeImage(&data.images[i], 0, buf);
+      snprintf(buf, sizeof(buf) - 1, "%s.png", data.objects[data.images[i].id]);
+      write_image(&data.images[i], 0, buf);
    }
-   printf("\nFILES: %u OBJECTS: %u\n", data.numFileNames, data.numObjectNames);
 
+   printf("\nFILES: %u OBJECTS: %u\n", data.num_files, data.num_objects);
    return EXIT_SUCCESS;
 }
 
